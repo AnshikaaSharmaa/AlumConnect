@@ -1,0 +1,142 @@
+stages:
+  - build
+  - publish
+  - deploy
+  - test
+  - code_quality_check
+
+build-backend:
+  stage: build
+  image: maven:latest
+  script:
+    - cd Backend/AlumConnect
+    - echo "Building the pipeline"
+    - mvn clean package
+  artifacts:
+    paths:
+      - Backend/AlumConnect/target/*.jar
+  tags:
+    - alumconnect-runner
+
+build-frontend:
+  stage: build
+  image: node:latest
+  script:
+    - cd Frontend/alumconnect
+    - echo "Building the pipeline"
+    - npm install
+    - npm run build
+  artifacts:
+    paths:
+      - Frontend/alumconnect/dist
+  tags:
+    - alumconnect-runner
+
+test:
+  stage: test
+  image: maven:latest
+  needs:
+    - build-backend
+  script:
+    - cd Backend/AlumConnect
+    - mvn test
+  tags:
+    - alumconnect-runner
+
+code_smells:
+  image: openjdk:17
+  needs:
+    - build-backend
+    - test
+  stage: code_quality_check
+  script:
+    - mkdir -p Backend/AlumConnect/smells
+    - rm -rf Backend/AlumConnect/smells/*
+    - java -jar Backend/AlumConnect/DesigniteJava.jar -i Backend/AlumConnect/src -o Backend/AlumConnect/smells/ | tee Backend/AlumConnect/smells_summary.txt
+  artifacts:
+    paths:
+      - Backend/AlumConnect/smells/*.csv
+      - Backend/AlumConnect/smells_summary.txt
+    expire_in: 5 days
+  tags:
+    - alumconnect-runner
+
+
+publish-backend:
+  image: docker:latest
+  stage: publish
+  tags:
+    - alumconnect-runner
+  variables:
+    DOCKER_TLS_CERTDIR: ""
+    DOCKER_HOST: "tcp://docker:2375"
+  services:
+    - docker:dind
+  script:
+    - cd Backend/AlumConnect
+    - pwd
+    - ls
+    - echo $SERVER_IP
+    - docker --version
+    - docker login -u $DOCKER_HUB_USER -p $DOCKER_HUB_PWD docker.io
+    - docker build -t docker.io/priyamandyal26/backend:$CI_COMMIT_SHORT_SHA -f Dockerfile .
+    - docker push docker.io/priyamandyal26/backend:$CI_COMMIT_SHORT_SHA
+  only:
+    - main
+
+publish-frontend:
+  image: docker:latest
+  stage: publish
+  tags:
+    - alumconnect-runner
+  variables:
+    DOCKER_TLS_CERTDIR: ""
+    DOCKER_HOST: "tcp://docker:2375"
+  services:
+    - docker:dind
+  script:
+    - cd Frontend/alumconnect
+    - echo "Publishing the frontend"
+    - pwd
+    - echo $SERVER_IP
+    - docker --version
+    - docker login -u $DOCKER_HUB_USER -p $DOCKER_HUB_PWD docker.io
+    - docker build -t docker.io/priyamandyal26/frontend:$CI_COMMIT_SHORT_SHA -f Dockerfile .
+    - docker push docker.io/priyamandyal26/frontend:$CI_COMMIT_SHORT_SHA
+  only:
+    - main
+
+deploy-backend:
+  image: alpine:latest
+  stage: deploy
+  tags:
+    - alumconnect-runner
+  script:
+    - apk update && apk add openssh-client sshpass
+    - sshpass -p aa1Gee5hev ssh -o StrictHostKeyChecking=no deployer@172.17.1.31 "docker login -u priyamandyal26 -p aBcDeF@123 docker.io"
+    - sshpass -p aa1Gee5hev ssh -o StrictHostKeyChecking=no deployer@172.17.1.31 "docker pull docker.io/priyamandyal26/backend:$CI_COMMIT_SHORT_SHA"
+    - sshpass -p aa1Gee5hev ssh -o StrictHostKeyChecking=no deployer@172.17.1.31 "docker container rm -f backend || true"
+    - sshpass -p aa1Gee5hev ssh -o StrictHostKeyChecking=no deployer@172.17.1.31 "docker run -d -p 8080:8080 --name backend docker.io/priyamandyal26/backend:$CI_COMMIT_SHORT_SHA"
+  environment:
+    name: production
+    url: http://172.17.1.31:8080
+  only:
+    - main
+
+deploy-frontend:
+  image: alpine:latest
+  stage: deploy
+  tags:
+    - alumconnect-runner
+  script:
+    - apk update && apk add openssh-client sshpass
+    - sshpass -p aa1Gee5hev ssh -o StrictHostKeyChecking=no deployer@172.17.1.31 "docker login -u priyamandyal26 -p aBcDeF@123 docker.io"
+    - sshpass -p aa1Gee5hev ssh -o StrictHostKeyChecking=no deployer@172.17.1.31 "docker pull docker.io/priyamandyal26/frontend:$CI_COMMIT_SHORT_SHA"
+    - sshpass -p aa1Gee5hev ssh -o StrictHostKeyChecking=no deployer@172.17.1.31 "docker container rm -f frontend || true"
+    - sshpass -p aa1Gee5hev ssh -o StrictHostKeyChecking=no deployer@172.17.1.31 "docker run -d -p 5173:8080 --name frontend docker.io/priyamandyal26/frontend:$CI_COMMIT_SHORT_SHA"
+  environment:
+    name: production
+    url: http://172.17.1.31:5173
+  only:
+    - main
+    
